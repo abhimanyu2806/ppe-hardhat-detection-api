@@ -4,4 +4,4 @@ __pycache__/
 .pytest_cache/
 model/best.pt
 *.jpg
-!tests/sample_image.jpg
+!tests/image.jpg
