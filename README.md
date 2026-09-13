@@ -6,6 +6,18 @@ Built for: Pre-Hackathon Screening, Round 1 — Constrained Object Detection & R
 
 ---
 
+## Live deployment
+
+> **Live URL:** https://ppe-hardhat-detection-api.onrender.com
+> **Interactive docs:** https://ppe-hardhat-detection-api.onrender.com/docs
+> **Health check:** https://ppe-hardhat-detection-api.onrender.com/health
+>
+> To use any endpoint, open the `/docs` link above, expand an endpoint, click **"Try it out"**, then **"Execute"**.
+>
+> ⚠️ **Known limitation:** This is deployed on Render's **free tier**, which provides only 512MB RAM — tight for RT-DETR-L + PyTorch. `/detect` and `/ask` may intermittently return a `502` error under this memory constraint, even though the container starts correctly and `/health` responds normally. **This is a hosting resource limitation, not a code defect** — the exact same requests succeed reliably when run locally or via Docker with adequate memory (see "Running with Docker" below). This tradeoff was accepted given the project timeline; a paid tier or a smaller model would resolve it in production.
+
+---
+
 ## What this does
 
 - **`/detect`** — accepts an image, returns bounding boxes, class names (`Hardhat` / `NO-Hardhat`), and confidence scores from a fine-tuned RT-DETR model, plus an aggregated safety assessment.
@@ -21,7 +33,7 @@ No agentic frameworks (LangChain, CrewAI, AutoGen, etc.) are used anywhere — b
 Project/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py            # FastAPI app, both endpoints
+│   ├── main.py            # FastAPI app, both endpoints, logging
 │   ├── detector.py         # RT-DETR wrapper
 │   └── reasoning.py        # Rule-based safety analysis
 ├── model/
@@ -33,6 +45,9 @@ Project/
 │   └── image.jpg            # Sample image used by test_model.py
 ├── train.py                 # Training script (fine-tune RT-DETR)
 ├── eval.py                  # Evaluation script (test-set metrics)
+├── Dockerfile                # Container build (see "Running with Docker" below)
+├── entrypoint.sh             # Container startup script (auto-downloads model if missing)
+├── .dockerignore
 ├── requirements.txt
 └── README.md
 ```
@@ -210,6 +225,41 @@ curl -X POST "http://127.0.0.1:8000/ask" \
 }
 ```
 This triggers when an on-topic question is asked but the image contains no people/hardhats, or all detections fall below the confidence floor — the system explicitly declines to guess rather than returning a potentially wrong answer.
+
+---
+
+## Running with Docker
+
+**1. Build the image:**
+```bash
+docker build -t ppe-detection-api .
+```
+
+**2. Run it, mounting your local model folder** (so weights don't need to be baked into the image):
+```bash
+docker run -p 8000:8000 -v /path/to/your/model:/app/model ppe-detection-api
+```
+
+**Or, without a local model folder** — the container's `entrypoint.sh` will automatically download `best.pt` from Drive on startup if it's not already present at `/app/model/best.pt`. This is how the live Render deployment works (no manual file copy needed).
+
+**3. Access it exactly like the local (non-Docker) setup:**
+```
+http://localhost:8000/docs
+```
+
+Note: use `localhost`, not the `0.0.0.0` address Uvicorn prints in its startup log — that's a bind address, not a browser URL.
+
+---
+
+## Logging
+
+The API logs to both the console and a persistent `app.log` file (excluded from git). Logged events include: startup + model path check, every `/detect` and `/ask` call (filename/question), the intent-routing decision for each `/ask` call, detection results, confidence-guardrail triggers, and errors (missing model, invalid images, inference failures).
+
+---
+
+## Error handling
+
+Beyond standard input validation (non-image files, corrupt images, empty uploads, empty questions), both `/detect` and `/ask` explicitly catch and log model inference failures, returning a clean `500` response rather than an unhandled crash. Known, accepted gaps (not fixed given the project timeline): no explicit request size limit for very large file uploads.
 
 ---
 
