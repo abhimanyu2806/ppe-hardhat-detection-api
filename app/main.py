@@ -19,7 +19,8 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(),          # prints to console
         logging.FileHandler("app.log")     # also persists to a file
-    ]
+    ],
+    force=True  # override any logging config already set up by other imported libraries
 )
 
 logger = logging.getLogger("ppe_api")
@@ -262,7 +263,16 @@ async def detect(file: UploadFile = File(...)):
 
     image = load_image_from_upload(image_data)
 
-    detections = model.detect(image)
+    try:
+        detections = model.detect(image)
+    except Exception:
+        logger.exception(f"/detect model inference failed for filename={file.filename}")
+        raise HTTPException(
+            status_code=500,
+            detail="Model inference failed while processing this image. "
+                    "This may be caused by an unusual image format or size."
+        )
+
     safety = analyze_safety(detections)
 
     logger.info(
@@ -364,7 +374,15 @@ async def ask(
 
     image = load_image_from_upload(image_data)
 
-    detections = model.detect(image)
+    try:
+        detections = model.detect(image)
+    except Exception:
+        logger.exception(f"/ask model inference failed for filename={file.filename}")
+        raise HTTPException(
+            status_code=500,
+            detail="Model inference failed while processing this image. "
+                    "This may be caused by an unusual image format or size."
+        )
 
     # --------------------------------------------------
     # Step 3: Structured safety reasoning
