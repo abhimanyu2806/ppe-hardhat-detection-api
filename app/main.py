@@ -1,3 +1,4 @@
+import logging
 from io import BytesIO
 from pathlib import Path
 
@@ -9,6 +10,22 @@ from app.reasoning import analyze_safety
 
 
 # --------------------------------------------------
+# Logging configuration
+# --------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(),          # prints to console
+        logging.FileHandler("app.log")     # also persists to a file
+    ]
+)
+
+logger = logging.getLogger("ppe_api")
+
+
+# --------------------------------------------------
 # FastAPI application
 # --------------------------------------------------
 
@@ -17,6 +34,13 @@ app = FastAPI(
     description="RT-DETR based hard-hat detection and safety reasoning API",
     version="1.0.0"
 )
+
+
+@app.on_event("startup")
+def on_startup():
+    logger.info("PPE Safety Detection API starting up.")
+    logger.info(f"Expected model path: {MODEL_PATH}")
+    logger.info(f"Model file present on disk: {MODEL_PATH.exists()}")
 
 
 # --------------------------------------------------
@@ -117,6 +141,7 @@ def get_detector():
     if detector is None:
 
         if not MODEL_PATH.exists():
+            logger.error(f"Model not found at {MODEL_PATH} -- cannot serve detection requests.")
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -125,10 +150,12 @@ def get_detector():
                 )
             )
 
+        logger.info(f"Loading RT-DETR model from {MODEL_PATH} (first request since startup)")
         detector = PPEDetector(
             model_path=str(MODEL_PATH),
             confidence_threshold=0.25
         )
+        logger.info("Model loaded successfully.")
 
     return detector
 
@@ -143,12 +170,14 @@ def load_image_from_upload(image_bytes: bytes) -> Image.Image:
         return image.convert("RGB")
 
     except UnidentifiedImageError:
+        logger.warning("Rejected upload: not a valid/decodable image.")
         raise HTTPException(
             status_code=400,
             detail="The uploaded file is not a valid image."
         )
 
     except Exception:
+        logger.exception("Unexpected error while reading uploaded image.")
         raise HTTPException(
             status_code=400,
             detail="Unable to read the uploaded image."
@@ -161,6 +190,7 @@ def validate_image_file(file: UploadFile):
     """
 
     if not file.content_type or not file.content_type.startswith("image/"):
+        logger.warning(f"Rejected non-image upload: filename={file.filename}, content_type={file.content_type}")
         raise HTTPException(
             status_code=400,
             detail="Uploaded file must be an image."
@@ -217,11 +247,14 @@ async def detect(file: UploadFile = File(...)):
 
     validate_image_file(file)
 
+    logger.info(f"/detect called | filename={file.filename}")
+
     model = get_detector()
 
     image_data = await file.read()
 
     if not image_data:
+        logger.warning(f"/detect rejected empty file: filename={file.filename}")
         raise HTTPException(
             status_code=400,
             detail="The uploaded image is empty."
@@ -231,6 +264,12 @@ async def detect(file: UploadFile = File(...)):
 
     detections = model.detect(image)
     safety = analyze_safety(detections)
+
+    logger.info(
+        f"/detect result | filename={file.filename} | "
+        f"detections={len(detections)} | status={safety['status']} | "
+        f"requires_review={safety['requires_review']}"
+    )
 
     return {
         "filename": file.filename,
@@ -276,7 +315,10 @@ async def ask(
 
     question_clean = question.strip()
 
+    logger.info(f"/ask called | question='{question_clean}' | filename={file.filename}")
+
     if not question_clean:
+        logger.warning("/ask rejected empty question")
         raise HTTPException(
             status_code=400,
             detail="Question cannot be empty."
@@ -287,6 +329,7 @@ async def ask(
     # --------------------------------------------------
 
     if not is_image_related_question(question_clean):
+        logger.info(f"/ask routing decision | question='{question_clean}' | used_detector=False (off-topic)")
 
         return {
             "question": question_clean,
@@ -300,6 +343,8 @@ async def ask(
             "safety": None
         }
 
+    logger.info(f"/ask routing decision | question='{question_clean}' | used_detector=True (PPE-related)")
+
     # --------------------------------------------------
     # Step 2: Validate image and run detector
     # --------------------------------------------------
@@ -311,6 +356,7 @@ async def ask(
     image_data = await file.read()
 
     if not image_data:
+        logger.warning(f"/ask rejected empty file: filename={file.filename}")
         raise HTTPException(
             status_code=400,
             detail="The uploaded image is empty."
@@ -326,11 +372,17 @@ async def ask(
 
     safety = analyze_safety(detections)
 
+    logger.info(
+        f"/ask detection result | filename={file.filename} | "
+        f"detections={len(detections)} | status={safety['status']}"
+    )
+
     # --------------------------------------------------
     # Step 4: Confidence guardrail
     # --------------------------------------------------
 
     if safety["status"] == "NO_DETECTIONS":
+        logger.info(f"/ask guardrail triggered | question='{question_clean}' | returning insufficient-information response")
 
         return {
             "question": question_clean,
@@ -352,6 +404,8 @@ async def ask(
         question_clean,
         safety
     )
+
+    logger.info(f"/ask final answer | question='{question_clean}' | answer='{answer}'")
 
     return {
         "question": question_clean,

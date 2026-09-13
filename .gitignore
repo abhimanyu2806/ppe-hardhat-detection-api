@@ -5,3 +5,4 @@ __pycache__/
 model/best.pt
 *.jpg
 !tests/image.jpg
+app.log
